@@ -178,6 +178,20 @@ struct ContentView: View {
             Text("Скользящее среднее по ускорению. Убирает шум на графике и уменьшает дрейф скорости. 0 — без сглаживания.")
                 .font(.footnote).foregroundColor(.secondary)
 
+            VStack(alignment: .leading) {
+                HStack {
+                    Text("Порог чувствительности")
+                    Spacer()
+                    Text(recorder.deadband < 0.005
+                         ? "выкл"
+                         : String(format: "%.2f м/с²", recorder.deadband))
+                        .foregroundColor(.secondary)
+                }
+                Slider(value: $recorder.deadband, in: 0...1.0, step: 0.01)
+            }
+            Text("Ускорение слабее этого порога считается шумом покоя и обнуляется — убирает «дрожание» графика в покое. 0 — выключено.")
+                .font(.footnote).foregroundColor(.secondary)
+
             Text("Скорость и перемещение получаются интегрированием ускорения и со временем накапливают погрешность. Компенсация смещения нуля и подавление дрейфа уменьшают этот рост.")
                 .font(.footnote).foregroundColor(.secondary)
         }

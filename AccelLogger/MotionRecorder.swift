@@ -34,7 +34,8 @@ final class MotionRecorder: ObservableObject {
     @Published var suppressDrift: Bool = false
     /// Скользящее среднее для ускорения (0 = выключено), с.
     @Published var smoothingSeconds: Double = 0.10
-    /// Зона нечувствительности по ускорению, м/с^2.
+    /// Порог чувствительности: ускорение слабее порога считается нулём, м/с^2.
+    /// 0 — порог выключен.
     @Published var deadband: Double = 0.05
     /// Время половинного "затухания" скорости при подавлении дрейфа, с.
     @Published var velocityHalfLife: Double = 2.0
@@ -235,10 +236,14 @@ final class MotionRecorder: ObservableObject {
         }
         measured = smoothed(measured)
 
-        // Интегрирование методом трапеций.
-        var integrated = measured
-        if suppressDrift && measured.magnitude < deadband { integrated = .zero }
+        // Порог чувствительности: колебания слабее порога считаются шумом покоя
+        // и обнуляются. Влияет и на график, и на интегрирование.
+        if deadband > 0, measured.magnitude < deadband {
+            measured = .zero
+        }
 
+        // Интегрирование методом трапеций.
+        let integrated = measured
         let average = (integrated + lastIntegratedAccel) * 0.5
         velocity = velocity + average * dt
         displacement = displacement + velocity * dt
@@ -352,6 +357,7 @@ final class MotionRecorder: ObservableObject {
         Мировая система координат: \(useWorldFrame ? "да" : "нет")
         Компенсация смещения нуля: \(biasText)
         Сглаживание (скользящее среднее): \(smoothingSeconds < 0.01 ? "выключено" : String(format: "%.2f с", smoothingSeconds))
+        Порог чувствительности: \(deadband < 0.005 ? "выключен" : String(format: "%.2f м/с²", deadband))
         Подавление дрейфа: \(suppressDrift ? "включено" : "выключено")
 
         Файл (CSV, разделитель «;», точка как десятичный разделитель).
