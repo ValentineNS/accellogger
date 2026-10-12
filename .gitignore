@@ -4,4 +4,9 @@ DerivedData/
 *.xcodeproj
 *.xcworkspace
 
+# Скачанные сборки (не хранить в репозитории)
+*.ipa
+*.zip
+AccelLogger-ipa/
+
 .DS_Store
