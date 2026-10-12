@@ -15,6 +15,7 @@ struct ContentView: View {
                 statusSection
                 controlSection
                 liveSection
+                chartsSection
                 settingsSection
                 exportSection
             }
@@ -118,6 +119,14 @@ struct ContentView: View {
                      total: recorder.liveVelocity.magnitude)
             valueRow(title: "Перемещение", vector: recorder.liveDisplacement, unit: "м",
                      total: recorder.liveDisplacement.magnitude)
+        }
+    }
+
+    private var chartsSection: some View {
+        Section {
+            NavigationLink(destination: ChartsScreen()) {
+                Label("Графики", systemImage: "chart.xyaxis.line")
+            }
         }
     }
 
