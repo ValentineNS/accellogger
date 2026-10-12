@@ -2,8 +2,8 @@ import Foundation
 import CoreMotion
 import Combine
 
-/// Читает акселерометр через CoreMotion, интегрирует ускорение в скорость
-/// и перемещение и накапливает отсчёты для экспорта.
+/// Читает акселерометр через CoreMotion, компенсирует смещение нуля,
+/// интегрирует ускорение в скорость и перемещение и накапливает отсчёты.
 final class MotionRecorder: ObservableObject {
 
     // MARK: - Публичное состояние
@@ -17,12 +17,19 @@ final class MotionRecorder: ObservableObject {
     @Published var statusMessage: String?
     @Published var lastExportURL: URL?
 
+    /// Текущее измеренное смещение нуля (в системе координат устройства), м/с^2.
+    @Published private(set) var bias = Vector3.zero
+    @Published private(set) var isCalibrating = false
+    @Published private(set) var calibrationProgress: Double = 0
+
     // MARK: - Настройки
 
     /// Частота опроса, Гц.
     @Published var sampleRate: Double = 50
     /// Пересчитывать ускорение в неподвижную (мировую) систему координат.
     @Published var useWorldFrame: Bool = true
+    /// Автоматически калибровать смещение при старте записи.
+    @Published var autoCalibrateOnStart: Bool = true
     /// Включить подавление дрейфа (leaky integrator + зона нечувствительности).
     @Published var suppressDrift: Bool = false
     /// Зона нечувствительности по ускорению, м/с^2.
@@ -53,13 +60,19 @@ final class MotionRecorder: ObservableObject {
     private var displacement = Vector3.zero
     private var counter = 0
 
+    // MARK: - Состояние калибровки
+
+    private var calibrationSamples: [Vector3] = []
+    private var calibrationTarget = 0
+    /// true, если калибровка сама запустила сеанс измерений (вне записи).
+    private var calibrationOwnsSession = false
+
     // MARK: - Доступность
 
     var isAvailable: Bool { manager.isDeviceMotionAvailable }
-
     var canExport: Bool { !samples.isEmpty }
 
-    // MARK: - Управление
+    // MARK: - Управление записью
 
     func toggleRecording() {
         isRecording ? stop() : start()
@@ -70,21 +83,14 @@ final class MotionRecorder: ObservableObject {
             statusMessage = "Акселерометр недоступен на этом устройстве."
             return
         }
-        resetState()
-        manager.deviceMotionUpdateInterval = 1.0 / max(1.0, sampleRate)
-
-        manager.startDeviceMotionUpdates(using: .xArbitraryZVertical,
-                                         to: queue) { [weak self] motion, error in
-            guard let self = self else { return }
-            if let error = error {
-                DispatchQueue.main.async { self.statusMessage = error.localizedDescription }
-                return
-            }
-            guard let motion = motion else { return }
-            self.process(motion)
-        }
+        resetData()
+        startUpdates()
         isRecording = true
-        statusMessage = nil
+        if autoCalibrateOnStart {
+            beginCalibration(seconds: 1.5, ownsSession: false)
+        } else {
+            statusMessage = nil
+        }
     }
 
     func stop() {
@@ -94,10 +100,15 @@ final class MotionRecorder: ObservableObject {
 
     func reset() {
         stop()
-        resetState()
+        resetData()
+        bias = .zero
+        isCalibrating = false
+        calibrationSamples.removeAll()
+        calibrationProgress = 0
+        statusMessage = nil
     }
 
-    private func resetState() {
+    private func resetData() {
         samples.removeAll()
         elapsed = 0
         liveAccel = .zero
@@ -108,6 +119,71 @@ final class MotionRecorder: ObservableObject {
         velocity = .zero
         displacement = .zero
         counter = 0
+    }
+
+    // MARK: - Калибровка
+
+    /// Запускает измерение смещения нуля. Телефон в это время должен лежать
+    /// неподвижно. Если запись не идёт — временно включает датчик сам.
+    func calibrate(seconds: Double = 1.5) {
+        guard manager.isDeviceMotionAvailable else {
+            statusMessage = "Акселерометр недоступен на этом устройстве."
+            return
+        }
+        let owns = !manager.isDeviceMotionActive
+        if owns { startUpdates() }
+        beginCalibration(seconds: seconds, ownsSession: owns)
+    }
+
+    private func beginCalibration(seconds: Double, ownsSession: Bool) {
+        let target = max(10, Int(sampleRate * seconds))
+        calibrationSamples.removeAll()
+        calibrationTarget = target
+        calibrationOwnsSession = ownsSession
+        calibrationProgress = 0
+        isCalibrating = true
+        statusMessage = "Калибровка… не двигайте телефон"
+    }
+
+    private func finishCalibration() {
+        let count = calibrationSamples.count
+        var sum = Vector3.zero
+        for sample in calibrationSamples { sum = sum + sample }
+        let mean = count > 0 ? sum * (1.0 / Double(count)) : Vector3.zero
+
+        let owns = calibrationOwnsSession
+        calibrationSamples.removeAll()
+        calibrationOwnsSession = false
+
+        // Сброс интегрирования, чтобы не было скачка из-за паузы калибровки.
+        lastTimestamp = nil
+        lastIntegratedAccel = .zero
+        velocity = .zero
+        displacement = .zero
+
+        DispatchQueue.main.async {
+            self.bias = mean
+            self.isCalibrating = false
+            self.calibrationProgress = 0
+            self.statusMessage = nil
+            if owns { self.manager.stopDeviceMotionUpdates() }
+        }
+    }
+
+    // MARK: - Запуск потока измерений
+
+    private func startUpdates() {
+        manager.deviceMotionUpdateInterval = 1.0 / max(1.0, sampleRate)
+        manager.startDeviceMotionUpdates(using: .xArbitraryZVertical,
+                                         to: queue) { [weak self] motion, error in
+            guard let self = self else { return }
+            if let error = error {
+                DispatchQueue.main.async { self.statusMessage = error.localizedDescription }
+                return
+            }
+            guard let motion = motion else { return }
+            self.process(motion)
+        }
     }
 
     // MARK: - Обработка одного замера
@@ -126,10 +202,33 @@ final class MotionRecorder: ObservableObject {
         // Защита от больших разрывов (например, паузы приложения).
         if dt > 0.5 { dt = 1.0 / max(1.0, sampleRate) }
 
-        // 1) Ускорение: g -> м/с^2, при необходимости в мировой системе координат.
-        let measured = makeAcceleration(motion)
+        // Сырое ускорение в системе координат устройства, м/с^2.
+        let rawDevice = Vector3(x: motion.userAcceleration.x * gravity,
+                                y: motion.userAcceleration.y * gravity,
+                                z: motion.userAcceleration.z * gravity)
 
-        // 2) Интегрирование методом трапеций.
+        // Во время калибровки только накапливаем отсчёты и ничего не пишем.
+        if isCalibrating {
+            calibrationSamples.append(rawDevice)
+            let progress = min(1.0, Double(calibrationSamples.count) / Double(calibrationTarget))
+            DispatchQueue.main.async {
+                self.calibrationProgress = progress
+                self.statusMessage = "Калибровка… \(Int(progress * 100))%"
+            }
+            if calibrationSamples.count >= calibrationTarget {
+                finishCalibration()
+            }
+            return
+        }
+
+        // Компенсация смещения нуля (в системе координат устройства).
+        let corrected = rawDevice - bias
+        var measured = corrected
+        if useWorldFrame {
+            measured = rotateToReferenceFrame(corrected, attitude: motion.attitude)
+        }
+
+        // Интегрирование методом трапеций.
         var integrated = measured
         if suppressDrift && measured.magnitude < deadband { integrated = .zero }
 
@@ -137,7 +236,7 @@ final class MotionRecorder: ObservableObject {
         velocity = velocity + average * dt
         displacement = displacement + velocity * dt
 
-        // 3) Подавление дрейфа (экспоненциальное затухание скорости).
+        // Подавление дрейфа (экспоненциальное затухание скорости).
         if suppressDrift {
             let halfLife = max(0.1, velocityHalfLife)
             velocity = velocity * exp(-log(2.0) * dt / halfLife)
@@ -160,17 +259,6 @@ final class MotionRecorder: ObservableObject {
             self.liveDisplacement = currentDisplacement
             self.elapsed = sample.time
         }
-    }
-
-    /// userAcceleration у CoreMotion выражено в g, переводим в м/с^2.
-    private func makeAcceleration(_ motion: CMDeviceMotion) -> Vector3 {
-        var a = Vector3(x: motion.userAcceleration.x * gravity,
-                        y: motion.userAcceleration.y * gravity,
-                        z: motion.userAcceleration.z * gravity)
-        if useWorldFrame {
-            a = rotateToReferenceFrame(a, attitude: motion.attitude)
-        }
-        return a
     }
 
     /// Переводит вектор из системы координат устройства в опорную (мировую),
@@ -226,6 +314,8 @@ final class MotionRecorder: ObservableObject {
         formatter.locale = Locale(identifier: "ru_RU")
         formatter.dateFormat = "d MMMM yyyy, HH:mm:ss"
         let rate = Int(sampleRate)
+        let biasText = String(format: "x %.4f, y %.4f, z %.4f м/с²",
+                              bias.x, bias.y, bias.z)
         return """
         Данные измерений акселерометра.
 
@@ -234,6 +324,7 @@ final class MotionRecorder: ObservableObject {
         Длительность: \(String(format: "%.2f", elapsed)) с
         Частота опроса: \(rate) Гц
         Мировая система координат: \(useWorldFrame ? "да" : "нет")
+        Компенсация смещения нуля: \(biasText)
         Подавление дрейфа: \(suppressDrift ? "включено" : "выключено")
 
         Файл (CSV, разделитель «;», точка как десятичный разделитель).

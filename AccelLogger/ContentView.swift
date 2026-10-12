@@ -55,12 +55,29 @@ struct ContentView: View {
                 Spacer()
                 Text(String(format: "%.2f с", recorder.elapsed)).monospacedDigit()
             }
+            HStack {
+                Text("Смещение нуля")
+                Spacer()
+                Text(biasString(recorder.bias))
+                    .font(.system(.footnote, design: .monospaced))
+                    .foregroundColor(.secondary)
+            }
+            if recorder.isCalibrating {
+                HStack {
+                    Text("Калибровка")
+                    Spacer()
+                    Text("\(Int(recorder.calibrationProgress * 100)) %")
+                        .monospacedDigit()
+                        .foregroundColor(.orange)
+                }
+            }
             if !recorder.isAvailable {
                 Text("Акселерометр недоступен")
                     .foregroundColor(.red)
             }
             if let message = recorder.statusMessage {
-                Text(message).foregroundColor(.red)
+                Text(message)
+                    .foregroundColor(recorder.isCalibrating ? .orange : .red)
             }
         }
     }
@@ -75,6 +92,14 @@ struct ContentView: View {
                     .foregroundColor(recorder.isRecording ? .red : .green)
             }
             .disabled(!recorder.isAvailable)
+
+            Button {
+                recorder.calibrate()
+            } label: {
+                Label(recorder.isCalibrating ? "Калибровка…" : "Калибровка (обнуление)",
+                      systemImage: "scope")
+            }
+            .disabled(recorder.isCalibrating || !recorder.isAvailable)
 
             Button {
                 recorder.reset()
@@ -108,6 +133,11 @@ struct ContentView: View {
             }
             .disabled(recorder.isRecording)
 
+            Toggle("Автокалибровка при старте", isOn: $recorder.autoCalibrateOnStart)
+                .disabled(recorder.isRecording)
+            Text("В начале записи телефон должен полежать неподвижно ~1,5 с — измеряется и вычитается смещение нуля датчика.")
+                .font(.footnote).foregroundColor(.secondary)
+
             Toggle("Мировая система координат", isOn: $recorder.useWorldFrame)
                 .disabled(recorder.isRecording)
             Text("Ускорение пересчитывается в неподвижную систему — оси не «крутятся» вместе с телефоном.")
@@ -125,7 +155,7 @@ struct ContentView: View {
                     Slider(value: $recorder.velocityHalfLife, in: 0.5...10, step: 0.5)
                 }
             }
-            Text("Скорость и перемещение получаются интегрированием ускорения и со временем накапливают погрешность. Подавление дрейфа ограничивает этот рост, но может сглаживать медленные движения.")
+            Text("Скорость и перемещение получаются интегрированием ускорения и со временем накапливают погрешность. Компенсация смещения нуля и подавление дрейфа уменьшают этот рост.")
                 .font(.footnote).foregroundColor(.secondary)
         }
     }
@@ -174,6 +204,11 @@ struct ContentView: View {
 
     private func format(_ value: Double) -> String {
         String(format: "%.3f", value)
+    }
+
+    private func biasString(_ vector: Vector3) -> String {
+        String(format: "x %@  y %@  z %@",
+               format(vector.x), format(vector.y), format(vector.z))
     }
 
     private var recipients: [String]? {
