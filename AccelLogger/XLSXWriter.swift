@@ -6,11 +6,13 @@ import Foundation
 /// (метод store), что полностью поддерживается Excel; так надёжнее, чем
 /// собственная реализация DEFLATE.
 ///
-/// Книга содержит 14 листов:
-/// 1. «Данные»                    — таблица всех отсчётов (заголовки с индексами);
+/// Книга содержит 16 листов:
+/// 1. «Данные»                    — таблица обработанных отсчётов (заголовки с индексами);
 /// 2. «Ускорение X» … «Главное перемещение» — 12 листов-диаграмм,
 ///    по одному графику на листе, без маркеров точек;
-/// 3. «ГрафикДанные»              — служебный (скрытый) лист с прореженными
+/// 3. «Сырые данные»              — необработанное ускорение датчика;
+/// 4. «Статистика»                — статистические характеристики сеанса;
+/// 5. «ГрафикДанные»              — служебный (скрытый) лист с прореженными
 ///    данными, на которые ссылаются диаграммы.
 ///
 /// Лист-диаграмма (chartsheet) связывается с диаграммой цепочкой частей:
@@ -81,7 +83,9 @@ enum XLSXWriter {
 
     // MARK: - Публичный интерфейс
 
-    static func makeWorkbook(samples: [MotionSample]) -> Data {
+    static func makeWorkbook(samples: [MotionSample],
+                             statistics: SignalStatistics?,
+                             rawSamples: [RawMotionSample]) -> Data {
         let chartSamples = decimate(samples, maxCount: maxChartPoints)
 
         var files: [Entry] = []
@@ -93,7 +97,9 @@ enum XLSXWriter {
         files.append(Entry("xl/_rels/workbook.xml.rels", workbookRels()))
         files.append(Entry("xl/styles.xml", stylesXML()))
         files.append(Entry("xl/worksheets/sheet1.xml", sheetDataXML(samples)))
-        files.append(Entry("xl/worksheets/sheet2.xml", sheetChartDataXML(chartSamples)))
+        files.append(Entry("xl/worksheets/sheet2.xml", sheetRawDataXML(rawSamples)))
+        files.append(Entry("xl/worksheets/sheet3.xml", sheetStatisticsXML(statistics)))
+        files.append(Entry("xl/worksheets/sheet4.xml", sheetChartDataXML(chartSamples)))
 
         // Листы-диаграммы: chartsheet → drawing → chart.
         for index in 0..<12 {
@@ -234,6 +240,63 @@ enum XLSXWriter {
         return out
     }
 
+    /// Лист «Сырые данные»: необработанное ускорение датчика (система координат
+    /// устройства, без компенсации смещения нуля).
+    private static func sheetRawDataXML(_ raw: [RawMotionSample]) -> String {
+        var out = header()
+        out += "<worksheet xmlns=\"\(NS.main)\" xmlns:r=\"\(NS.r)\"><sheetData>"
+
+        let titles = ["N", "t, s", "ax_raw, м/с2", "ay_raw, м/с2", "az_raw, м/с2"]
+        out += "<row r=\"1\">"
+        for (index, title) in titles.enumerated() {
+            out += stringCell("\(columnLetter(index + 1))1", title)
+        }
+        out += "</row>"
+
+        out.reserveCapacity(out.count + raw.count * 120)
+        for (offset, sample) in raw.enumerated() {
+            let row = offset + 2
+            out += "<row r=\"\(row)\">"
+            out += numberCell("A\(row)", Double(sample.index))
+            out += numberCell("B\(row)", sample.time)
+            out += numberCell("C\(row)", sample.accelDevice.x)
+            out += numberCell("D\(row)", sample.accelDevice.y)
+            out += numberCell("E\(row)", sample.accelDevice.z)
+            out += "</row>"
+        }
+
+        out += "</sheetData></worksheet>"
+        return out
+    }
+
+    /// Лист «Статистика»: характеристики сеанса в виде «параметр — значение».
+    private static func sheetStatisticsXML(_ statistics: SignalStatistics?) -> String {
+        var out = header()
+        out += "<worksheet xmlns=\"\(NS.main)\" xmlns:r=\"\(NS.r)\"><sheetData>"
+
+        out += "<row r=\"1\">"
+        out += stringCell("A1", "Параметр")
+        out += stringCell("B1", "Значение")
+        out += "</row>"
+
+        let rows = statistics?.rows() ?? [("Нет данных", "")]
+        for (offset, pair) in rows.enumerated() {
+            let row = offset + 2
+            out += "<row r=\"\(row)\">"
+            out += stringCell("A\(row)", pair.0)
+            let normalized = pair.1.replacingOccurrences(of: ",", with: ".")
+            if !normalized.isEmpty, let value = Double(normalized) {
+                out += numberCell("B\(row)", value)
+            } else {
+                out += stringCell("B\(row)", pair.1)
+            }
+            out += "</row>"
+        }
+
+        out += "</sheetData></worksheet>"
+        return out
+    }
+
     // MARK: - Листы-диаграммы (chartsheets)
 
     private static func chartsheetXML() -> String {
@@ -364,9 +427,11 @@ enum XLSXWriter {
     private static func workbookXML() -> String {
         var sheets = "<sheet name=\"Данные\" sheetId=\"1\" r:id=\"rId1\"/>"
         for (index, title) in chartTitles.enumerated() {
-            sheets += "<sheet name=\"\(escape(title))\" sheetId=\"\(index + 2)\" r:id=\"rId\(index + 3)\"/>"
+            sheets += "<sheet name=\"\(escape(title))\" sheetId=\"\(index + 2)\" r:id=\"rId\(index + 5)\"/>"
         }
-        sheets += "<sheet name=\"ГрафикДанные\" sheetId=\"14\" r:id=\"rId2\" state=\"hidden\"/>"
+        sheets += "<sheet name=\"Сырые данные\" sheetId=\"14\" r:id=\"rId2\"/>"
+        sheets += "<sheet name=\"Статистика\" sheetId=\"15\" r:id=\"rId3\"/>"
+        sheets += "<sheet name=\"ГрафикДанные\" sheetId=\"16\" r:id=\"rId4\" state=\"hidden\"/>"
         return header()
             + "<workbook xmlns=\"\(NS.main)\" xmlns:r=\"\(NS.r)\"><sheets>"
             + sheets
@@ -377,10 +442,12 @@ enum XLSXWriter {
         var out = header() + "<Relationships xmlns=\"\(NS.pr)\">"
         out += "<Relationship Id=\"rId1\" Type=\"\(NS.r)/worksheet\" Target=\"worksheets/sheet1.xml\"/>"
         out += "<Relationship Id=\"rId2\" Type=\"\(NS.r)/worksheet\" Target=\"worksheets/sheet2.xml\"/>"
+        out += "<Relationship Id=\"rId3\" Type=\"\(NS.r)/worksheet\" Target=\"worksheets/sheet3.xml\"/>"
+        out += "<Relationship Id=\"rId4\" Type=\"\(NS.r)/worksheet\" Target=\"worksheets/sheet4.xml\"/>"
         for index in 0..<12 {
-            out += "<Relationship Id=\"rId\(index + 3)\" Type=\"\(NS.r)/chartsheet\" Target=\"chartsheets/sheet\(index + 1).xml\"/>"
+            out += "<Relationship Id=\"rId\(index + 5)\" Type=\"\(NS.r)/chartsheet\" Target=\"chartsheets/sheet\(index + 1).xml\"/>"
         }
-        out += "<Relationship Id=\"rId15\" Type=\"\(NS.r)/styles\" Target=\"styles.xml\"/>"
+        out += "<Relationship Id=\"rId17\" Type=\"\(NS.r)/styles\" Target=\"styles.xml\"/>"
         out += "</Relationships>"
         return out
     }
@@ -401,6 +468,8 @@ enum XLSXWriter {
         out += "<Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/>"
         out += "<Override PartName=\"/xl/worksheets/sheet1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>"
         out += "<Override PartName=\"/xl/worksheets/sheet2.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>"
+        out += "<Override PartName=\"/xl/worksheets/sheet3.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>"
+        out += "<Override PartName=\"/xl/worksheets/sheet4.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>"
         for index in 1...12 {
             out += "<Override PartName=\"/xl/chartsheets/sheet\(index).xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.chartsheet+xml\"/>"
         }

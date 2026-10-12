@@ -17,6 +17,8 @@ struct ContentView: View {
                 liveSection
                 chartsSection
                 settingsSection
+                statisticsSection
+                statsSection
                 exportSection
             }
             .navigationTitle("Акселерометр")
@@ -43,8 +45,8 @@ struct ContentView: View {
             HStack {
                 Text("Состояние")
                 Spacer()
-                Text(recorder.isRecording ? "Запись…" : "Остановлено")
-                    .foregroundColor(recorder.isRecording ? .green : .secondary)
+                Text(stateText)
+                    .foregroundColor(stateColor)
             }
             HStack {
                 Text("Отсчётов")
@@ -119,6 +121,8 @@ struct ContentView: View {
                      total: recorder.liveVelocity.magnitude)
             valueRow(title: "Перемещение", vector: recorder.liveDisplacement, unit: "м",
                      total: recorder.liveDisplacement.magnitude)
+            Text("Скорость и перемещение рассчитываются после остановки записи — при статистической обработке всего массива отсчётов.")
+                .font(.footnote).foregroundColor(.secondary)
         }
     }
 
@@ -131,7 +135,7 @@ struct ContentView: View {
     }
 
     private var settingsSection: some View {
-        Section("Параметры") {
+        Section("Параметры записи") {
             VStack(alignment: .leading) {
                 HStack {
                     Text("Частота")
@@ -151,31 +155,56 @@ struct ContentView: View {
                 .disabled(recorder.isRecording)
             Text("Ускорение пересчитывается в неподвижную систему — оси не «крутятся» вместе с телефоном.")
                 .font(.footnote).foregroundColor(.secondary)
+        }
+    }
 
-            Toggle("Подавлять дрейф", isOn: $recorder.suppressDrift)
-            if recorder.suppressDrift {
-                VStack(alignment: .leading) {
-                    HStack {
-                        Text("Время затухания")
-                        Spacer()
-                        Text(String(format: "%.1f с", recorder.velocityHalfLife))
-                            .foregroundColor(.secondary)
-                    }
-                    Slider(value: $recorder.velocityHalfLife, in: 0.5...10, step: 0.5)
-                }
-            }
+    private var statisticsSection: some View {
+        Section("Статистическая обработка") {
             VStack(alignment: .leading) {
                 HStack {
-                    Text("Сглаживание")
+                    Text("Порог выбросов (Хампель)")
                     Spacer()
-                    Text(recorder.smoothingSeconds < 0.01
+                    Text(recorder.outlierSigma < 0.01
                          ? "выкл"
-                         : String(format: "%.2f с", recorder.smoothingSeconds))
+                         : String(format: "%.1f σ", recorder.outlierSigma))
                         .foregroundColor(.secondary)
                 }
-                Slider(value: $recorder.smoothingSeconds, in: 0...0.5, step: 0.02)
+                Slider(value: $recorder.outlierSigma, in: 0...6, step: 0.5)
             }
-            Text("Скользящее среднее по ускорению. Убирает шум на графике и уменьшает дрейф скорости. 0 — без сглаживания.")
+            Text("Робастное подавление выпадающих точек: отсчёт заменяется медианой окна, если отклонился больше чем на указанное число σ (медиана + MAD). 0 — выключено.")
+                .font(.footnote).foregroundColor(.secondary)
+
+            VStack(alignment: .leading) {
+                HStack {
+                    Text("Адаптивное сглаживание")
+                    Spacer()
+                    Text(recorder.smoothingMaxSeconds < 0.01
+                         ? "выкл"
+                         : String(format: "до %.2f с", recorder.smoothingMaxSeconds))
+                        .foregroundColor(.secondary)
+                }
+                Slider(value: $recorder.smoothingMaxSeconds, in: 0...0.5, step: 0.02)
+            }
+            Text("Медианный фильтр и сглаживание скользящим средним. Окно подбирается автоматически по уровню шума: шум снимается, но реальный сигнал не «съедается».")
+                .font(.footnote).foregroundColor(.secondary)
+
+            Toggle("Фильтр Калмана", isOn: $recorder.kalmanEnabled)
+            if recorder.kalmanEnabled {
+                VStack(alignment: .leading) {
+                    HStack {
+                        Text("Степень сглаживания")
+                        Spacer()
+                        Text(String(format: "%.2f", recorder.kalmanSmoothing))
+                            .foregroundColor(.secondary)
+                    }
+                    Slider(value: $recorder.kalmanSmoothing, in: 0...1, step: 0.05)
+                }
+                Text("Совместная оценка ускорения, скорости и перемещения; даёт доверительный интервал и снижает дрейф.")
+                    .font(.footnote).foregroundColor(.secondary)
+            }
+
+            Toggle("Подавлять дрейф (обнуление в покое)", isOn: $recorder.suppressDrift)
+            Text("При обнаружении покоя скорость принудительно обнуляется (ZUPT) — перемещение не «уползает».")
                 .font(.footnote).foregroundColor(.secondary)
 
             VStack(alignment: .leading) {
@@ -189,7 +218,7 @@ struct ContentView: View {
                 }
                 Slider(value: $recorder.deadband, in: 0...1.0, step: 0.01)
             }
-            Text("Ускорение слабее этого порога считается шумом покоя и обнуляется — убирает «дрожание» графика в покое. 0 — выключено.")
+            Text("Ускорение слабее этого порога считается шумом покоя и обнуляется. 0 — выключено.")
                 .font(.footnote).foregroundColor(.secondary)
 
             VStack(alignment: .leading) {
@@ -203,12 +232,45 @@ struct ContentView: View {
                 }
                 Slider(value: $recorder.velocityDeadband, in: 0...0.5, step: 0.005)
             }
-            Text("Скорость слабее этого порога считается нулём — перемещение перестаёт «уползать» после остановки. 0 — выключено.")
+            Text("Скорость слабее этого порога считается нулём. 0 — выключено.")
                 .font(.footnote).foregroundColor(.secondary)
 
-            Text("Скорость и перемещение получаются интегрированием ускорения и со временем накапливают погрешность. Компенсация смещения нуля и подавление дрейфа уменьшают этот рост.")
+            Text("Обработка применяется ко всему массиву отсчётов после остановки записи, затем выполняется интегрирование.")
                 .font(.footnote).foregroundColor(.secondary)
+
+            if !recorder.isRecording && !recorder.samples.isEmpty {
+                Button {
+                    recorder.reprocess()
+                } label: {
+                    Label("Обработать заново", systemImage: "arrow.triangle.2.circlepath")
+                }
+                .disabled(recorder.isProcessing)
+            }
         }
+    }
+
+    private var statsSection: some View {
+        Group {
+            if recorder.statistics != nil {
+                Section("Итоги сеанса") {
+                    ForEach(statisticsRows.indices, id: \.self) { index in
+                        HStack {
+                            Text(statisticsRows[index].0)
+                            Spacer()
+                            Text(statisticsRows[index].1)
+                                .foregroundColor(.secondary)
+                                .monospacedDigit()
+                        }
+                        .font(.footnote)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Строки статистики без пустых подписей.
+    private var statisticsRows: [(String, String)] {
+        (recorder.statistics?.rows() ?? []).filter { !$0.0.isEmpty }
     }
 
     private var exportSection: some View {
@@ -247,6 +309,18 @@ struct ContentView: View {
     }
 
     // MARK: - Вспомогательные представления
+
+    private var stateText: String {
+        if recorder.isProcessing { return "Обработка…" }
+        if recorder.isRecording { return "Запись…" }
+        return "Остановлено"
+    }
+
+    private var stateColor: Color {
+        if recorder.isProcessing { return .orange }
+        if recorder.isRecording { return .green }
+        return .secondary
+    }
 
     private func valueRow(title: String, vector: Vector3, unit: String, total: Double) -> some View {
         VStack(alignment: .leading, spacing: 4) {
