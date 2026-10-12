@@ -164,6 +164,20 @@ struct ContentView: View {
                     Slider(value: $recorder.velocityHalfLife, in: 0.5...10, step: 0.5)
                 }
             }
+            VStack(alignment: .leading) {
+                HStack {
+                    Text("Сглаживание")
+                    Spacer()
+                    Text(recorder.smoothingSeconds < 0.01
+                         ? "выкл"
+                         : String(format: "%.2f с", recorder.smoothingSeconds))
+                        .foregroundColor(.secondary)
+                }
+                Slider(value: $recorder.smoothingSeconds, in: 0...0.5, step: 0.02)
+            }
+            Text("Скользящее среднее по ускорению. Убирает шум на графике и уменьшает дрейф скорости. 0 — без сглаживания.")
+                .font(.footnote).foregroundColor(.secondary)
+
             Text("Скорость и перемещение получаются интегрированием ускорения и со временем накапливают погрешность. Компенсация смещения нуля и подавление дрейфа уменьшают этот рост.")
                 .font(.footnote).foregroundColor(.secondary)
         }

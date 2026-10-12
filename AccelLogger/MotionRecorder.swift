@@ -32,6 +32,8 @@ final class MotionRecorder: ObservableObject {
     @Published var autoCalibrateOnStart: Bool = true
     /// Включить подавление дрейфа (leaky integrator + зона нечувствительности).
     @Published var suppressDrift: Bool = false
+    /// Скользящее среднее для ускорения (0 = выключено), с.
+    @Published var smoothingSeconds: Double = 0.10
     /// Зона нечувствительности по ускорению, м/с^2.
     @Published var deadband: Double = 0.05
     /// Время половинного "затухания" скорости при подавлении дрейфа, с.
@@ -59,6 +61,8 @@ final class MotionRecorder: ObservableObject {
     private var velocity = Vector3.zero
     private var displacement = Vector3.zero
     private var counter = 0
+    /// История ускорения для скользящего среднего.
+    private var accelHistory: [Vector3] = []
 
     // MARK: - Состояние калибровки
 
@@ -119,6 +123,7 @@ final class MotionRecorder: ObservableObject {
         velocity = .zero
         displacement = .zero
         counter = 0
+        accelHistory.removeAll()
     }
 
     // MARK: - Калибровка
@@ -160,6 +165,7 @@ final class MotionRecorder: ObservableObject {
         lastIntegratedAccel = .zero
         velocity = .zero
         displacement = .zero
+        accelHistory.removeAll()
 
         DispatchQueue.main.async {
             self.bias = mean
@@ -227,6 +233,7 @@ final class MotionRecorder: ObservableObject {
         if useWorldFrame {
             measured = rotateToReferenceFrame(corrected, attitude: motion.attitude)
         }
+        measured = smoothed(measured)
 
         // Интегрирование методом трапеций.
         var integrated = measured
@@ -259,6 +266,25 @@ final class MotionRecorder: ObservableObject {
             self.liveDisplacement = currentDisplacement
             self.elapsed = sample.time
         }
+    }
+
+    /// Скользящее среднее по ускорению: убирает высокочастотный шум датчика
+    /// и уменьшает накопление ошибки при интегрировании.
+    private func smoothed(_ v: Vector3) -> Vector3 {
+        let window = max(1, Int(smoothingSeconds * sampleRate))
+        guard window > 1 else { return v }
+
+        accelHistory.append(v)
+        let cap = window * 2
+        if accelHistory.count > cap {
+            accelHistory.removeFirst(accelHistory.count - cap)
+        }
+        let count = min(window, accelHistory.count)
+        var sum = Vector3.zero
+        for index in (accelHistory.count - count)..<accelHistory.count {
+            sum = sum + accelHistory[index]
+        }
+        return sum * (1.0 / Double(count))
     }
 
     /// Переводит вектор из системы координат устройства в опорную (мировую),
@@ -325,6 +351,7 @@ final class MotionRecorder: ObservableObject {
         Частота опроса: \(rate) Гц
         Мировая система координат: \(useWorldFrame ? "да" : "нет")
         Компенсация смещения нуля: \(biasText)
+        Сглаживание (скользящее среднее): \(smoothingSeconds < 0.01 ? "выключено" : String(format: "%.2f с", smoothingSeconds))
         Подавление дрейфа: \(suppressDrift ? "включено" : "выключено")
 
         Файл (CSV, разделитель «;», точка как десятичный разделитель).
