@@ -192,6 +192,20 @@ struct ContentView: View {
             Text("Ускорение слабее этого порога считается шумом покоя и обнуляется — убирает «дрожание» графика в покое. 0 — выключено.")
                 .font(.footnote).foregroundColor(.secondary)
 
+            VStack(alignment: .leading) {
+                HStack {
+                    Text("Порог скорости")
+                    Spacer()
+                    Text(recorder.velocityDeadband < 0.005
+                         ? "выкл"
+                         : String(format: "%.3f м/с", recorder.velocityDeadband))
+                        .foregroundColor(.secondary)
+                }
+                Slider(value: $recorder.velocityDeadband, in: 0...0.5, step: 0.005)
+            }
+            Text("Скорость слабее этого порога считается нулём — перемещение перестаёт «уползать» после остановки. 0 — выключено.")
+                .font(.footnote).foregroundColor(.secondary)
+
             Text("Скорость и перемещение получаются интегрированием ускорения и со временем накапливают погрешность. Компенсация смещения нуля и подавление дрейфа уменьшают этот рост.")
                 .font(.footnote).foregroundColor(.secondary)
         }

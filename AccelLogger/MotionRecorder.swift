@@ -37,6 +37,8 @@ final class MotionRecorder: ObservableObject {
     /// Порог чувствительности: ускорение слабее порога считается нулём, м/с^2.
     /// 0 — порог выключен.
     @Published var deadband: Double = 0.05
+    /// Порог скорости: скорость слабее порога обнуляется, м/с. 0 — выключен.
+    @Published var velocityDeadband: Double = 0.05
     /// Время половинного "затухания" скорости при подавлении дрейфа, с.
     @Published var velocityHalfLife: Double = 2.0
 
@@ -253,6 +255,13 @@ final class MotionRecorder: ObservableObject {
             let halfLife = max(0.1, velocityHalfLife)
             velocity = velocity * exp(-log(2.0) * dt / halfLife)
         }
+
+        // Порог скорости: мелкая скорость считается нулём — перемещение
+        // перестаёт «уползать» в покое.
+        if velocityDeadband > 0, velocity.magnitude < velocityDeadband {
+            velocity = .zero
+        }
+
         lastIntegratedAccel = integrated
 
         let currentVelocity = velocity
@@ -358,6 +367,7 @@ final class MotionRecorder: ObservableObject {
         Компенсация смещения нуля: \(biasText)
         Сглаживание (скользящее среднее): \(smoothingSeconds < 0.01 ? "выключено" : String(format: "%.2f с", smoothingSeconds))
         Порог чувствительности: \(deadband < 0.005 ? "выключен" : String(format: "%.2f м/с²", deadband))
+        Порог скорости: \(velocityDeadband < 0.005 ? "выключен" : String(format: "%.3f м/с", velocityDeadband))
         Подавление дрейфа: \(suppressDrift ? "включено" : "выключено")
 
         Файл (CSV, разделитель «;», точка как десятичный разделитель).
