@@ -1,0 +1,35 @@
+name: AccelLogger
+options:
+  bundleIdPrefix: com.example
+  deploymentTarget:
+    iOS: "15.0"
+  createIntermediateGroups: true
+
+targets:
+  AccelLogger:
+    type: application
+    platform: iOS
+    sources:
+      - path: AccelLogger
+        excludes:
+          - "Info.plist"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.accellogger
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: AccelLogger/Info.plist
+        TARGETED_DEVICE_FAMILY: "1"
+        SWIFT_VERSION: "5.0"
+        CODE_SIGN_STYLE: Automatic
+
+schemes:
+  AccelLogger:
+    build:
+      targets:
+        AccelLogger: all
+    run:
+      config: Debug
+    archive:
+      config: Release
