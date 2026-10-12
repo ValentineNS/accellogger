@@ -219,16 +219,23 @@ struct ContentView: View {
                 .autocapitalization(.none)
 
             Button {
-                prepareAndSend()
+                prepareAndSendExcel()
             } label: {
-                Label("Отправить на e-mail", systemImage: "envelope")
+                Label("Отправить Excel на e-mail", systemImage: "envelope")
             }
             .disabled(!recorder.canExport)
 
             Button {
-                prepareAndShare()
+                prepareAndShareExcel()
             } label: {
-                Label("Поделиться файлом", systemImage: "square.and.arrow.up")
+                Label("Поделиться Excel-файлом", systemImage: "square.and.arrow.up")
+            }
+            .disabled(!recorder.canExport)
+
+            Button {
+                prepareAndShareCSV()
+            } label: {
+                Label("Поделиться CSV-файлом", systemImage: "tablecells")
             }
             .disabled(!recorder.canExport)
 
@@ -269,18 +276,29 @@ struct ContentView: View {
 
     // MARK: - Действия
 
-    private func prepareAndSend() {
+    private let xlsxMimeType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+    private func prepareAndSendExcel() {
         do {
-            let url = try recorder.makeExportFile()
+            let url = try recorder.makeExcelFile()
             let data = try Data(contentsOf: url)
-            attachment = (data, "text/csv", url.lastPathComponent)
+            attachment = (data, xlsxMimeType, url.lastPathComponent)
             showingMail = true
         } catch {
-            recorder.statusMessage = "Не удалось создать файл: \(error.localizedDescription)"
+            recorder.statusMessage = "Не удалось создать Excel-файл: \(error.localizedDescription)"
         }
     }
 
-    private func prepareAndShare() {
+    private func prepareAndShareExcel() {
+        do {
+            _ = try recorder.makeExcelFile()
+            showingShare = true
+        } catch {
+            recorder.statusMessage = "Не удалось создать Excel-файл: \(error.localizedDescription)"
+        }
+    }
+
+    private func prepareAndShareCSV() {
         do {
             _ = try recorder.makeExportFile()
             showingShare = true

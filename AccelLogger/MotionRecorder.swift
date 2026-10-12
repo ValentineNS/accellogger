@@ -348,6 +348,19 @@ final class MotionRecorder: ObservableObject {
         return url
     }
 
+    /// Формирует книгу Excel (.xlsx): таблица данных + 12 графиков.
+    func makeExcelFile() throws -> URL {
+        let data = XLSXWriter.makeWorkbook(samples: samples)
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        let name = "motion_\(formatter.string(from: Date())).xlsx"
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+        try data.write(to: url, options: .atomic)
+        lastExportURL = url
+        return url
+    }
+
     /// Краткое описание сеанса для тела письма.
     func emailBody() -> String {
         let formatter = DateFormatter()
@@ -370,13 +383,14 @@ final class MotionRecorder: ObservableObject {
         Порог скорости: \(velocityDeadband < 0.005 ? "выключен" : String(format: "%.3f м/с", velocityDeadband))
         Подавление дрейфа: \(suppressDrift ? "включено" : "выключено")
 
-        Файл (CSV, разделитель «;», точка как десятичный разделитель).
-        Колонки:
+        Файл: книга Excel (.xlsx). Лист «Данные» — таблица всех отсчётов:
         index — номер отсчёта;
         time_s — время от начала, с;
         ax/ay/az_m_s2 — ускорение по осям и его модуль, м/с^2;
         vx/vy/vz_m_s — скорость по осям и её модуль, м/с;
         sx/sy/sz_m — перемещение по осям и расстояние от начала, м.
+        Лист «Графики» — 12 диаграмм: ускорение, скорость и перемещение
+        по осям X/Y/Z и их модули во времени.
 
         Примечание: скорость и перемещение получены интегрированием ускорения,
         поэтому при длительной записи возможен накопительный дрейф.
