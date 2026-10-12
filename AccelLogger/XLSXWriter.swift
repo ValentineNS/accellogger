@@ -6,11 +6,18 @@ import Foundation
 /// (метод store), что полностью поддерживается Excel; так надёжнее, чем
 /// собственная реализация DEFLATE.
 ///
-/// Книга содержит три листа:
-/// 1. «Данные»        — таблица всех отсчётов;
-/// 2. «Графики»       — 12 встроенных диаграмм;
-/// 3. «ГрафикДанные»  — служебный (скрытый) лист с прореженными данными,
-///                      на которые ссылаются диаграммы.
+/// Книга содержит 14 листов:
+/// 1. «Данные»                    — таблица всех отсчётов (заголовки с индексами);
+/// 2. «Ускорение X» … «Главное перемещение» — 12 листов-диаграмм,
+///    по одному графику на листе, без маркеров точек;
+/// 3. «ГрафикДанные»              — служебный (скрытый) лист с прореженными
+///    данными, на которые ссылаются диаграммы.
+///
+/// Лист-диаграмма (chartsheet) связывается с диаграммой цепочкой частей:
+/// chartsheet → drawing → chart. Проверено на Excel 16: диаграмма на листе
+/// прикрепляется только если chart содержит кастомизации `<c:userShapes>`
+/// и связан со «спутником» — собственной пустой chart-частью, иначе Excel
+/// молча игнорирует диаграмму на листе.
 enum XLSXWriter {
 
     // MARK: - Пространства имён
@@ -20,21 +27,46 @@ enum XLSXWriter {
         static let r = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
         static let a = "http://schemas.openxmlformats.org/drawingml/2006/main"
         static let c = "http://schemas.openxmlformats.org/drawingml/2006/chart"
+        static let cdr = "http://schemas.openxmlformats.org/drawingml/2006/chartDrawing"
         static let xdr = "http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing"
         static let ct = "http://schemas.openxmlformats.org/package/2006/content-types"
         static let pr = "http://schemas.openxmlformats.org/package/2006/relationships"
     }
 
-    // MARK: - Описания столбцов
+    // MARK: - Заголовки столбцов
 
-    private static let dataHeaders = ["index", "time_s",
-                                      "ax_m_s2", "ay_m_s2", "az_m_s2", "a_total_m_s2",
-                                      "vx_m_s", "vy_m_s", "vz_m_s", "v_total_m_s",
-                                      "sx_m", "sy_m", "sz_m", "s_total_m"]
+    /// Один «запуск» rich-текста в ячейке: текст и вертикальное выравнивание
+    /// (subscript / superscript / nil).
+    private struct Run {
+        let text: String
+        let vertAlign: String?
+        init(_ text: String, _ vertAlign: String? = nil) {
+            self.text = text
+            self.vertAlign = vertAlign
+        }
+    }
 
-    private static let chartHeaders = ["time_s", "ax", "ay", "az", "a_total",
-                                       "vx", "vy", "vz", "v_total",
-                                       "sx", "sy", "sz", "s_total"]
+    /// Заголовки таблицы «Данные»: x/y/z — нижние индексы, «2» в м/с² — верхний.
+    private static let dataHeaders: [[Run]] = [
+        [Run("N")],
+        [Run("t, s")],
+        [Run("a"), Run("x", "subscript"), Run(", м/с"), Run("2", "superscript")],
+        [Run("a"), Run("y", "subscript"), Run(", м/с"), Run("2", "superscript")],
+        [Run("a"), Run("z", "subscript"), Run(", м/с"), Run("2", "superscript")],
+        [Run("a"), Run(", м/с"), Run("2", "superscript")],
+        [Run("V"), Run("x", "subscript"), Run(", м/с")],
+        [Run("V"), Run("y", "subscript"), Run(", м/с")],
+        [Run("V"), Run("z", "subscript"), Run(", м/с")],
+        [Run("V"), Run(", м/с")],
+        [Run("S"), Run("x", "subscript"), Run(", м")],
+        [Run("S"), Run("y", "subscript"), Run(", м")],
+        [Run("S"), Run("z", "subscript"), Run(", м")],
+        [Run("S"), Run(", м")],
+    ]
+
+    private static let chartHeaders = ["time_s", "ax", "ay", "az", "a",
+                                       "Vx", "Vy", "Vz", "V",
+                                       "Sx", "Sy", "Sz", "S"]
 
     private static let chartTitles = ["Ускорение X", "Ускорение Y", "Ускорение Z", "Главное ускорение",
                                       "Скорость X", "Скорость Y", "Скорость Z", "Главная скорость",
@@ -61,11 +93,18 @@ enum XLSXWriter {
         files.append(Entry("xl/_rels/workbook.xml.rels", workbookRels()))
         files.append(Entry("xl/styles.xml", stylesXML()))
         files.append(Entry("xl/worksheets/sheet1.xml", sheetDataXML(samples)))
-        files.append(Entry("xl/worksheets/sheet2.xml", sheetCanvasXML()))
-        files.append(Entry("xl/worksheets/sheet3.xml", sheetChartDataXML(chartSamples)))
-        files.append(Entry("xl/worksheets/_rels/sheet2.xml.rels", sheetDrawingRels()))
-        files.append(Entry("xl/drawings/drawing1.xml", drawingXML()))
-        files.append(Entry("xl/drawings/_rels/drawing1.xml.rels", drawingRels()))
+        files.append(Entry("xl/worksheets/sheet2.xml", sheetChartDataXML(chartSamples)))
+
+        // Листы-диаграммы: chartsheet → drawing → chart.
+        for index in 0..<12 {
+            files.append(Entry("xl/chartsheets/sheet\(index + 1).xml", chartsheetXML()))
+            files.append(Entry("xl/chartsheets/_rels/sheet\(index + 1).xml.rels",
+                               chartsheetRels(index + 1)))
+            files.append(Entry("xl/drawings/drawing\(index + 1).xml",
+                               chartsheetDrawingXML(index + 1)))
+            files.append(Entry("xl/drawings/_rels/drawing\(index + 1).xml.rels",
+                               drawingsheetRels(index + 1)))
+        }
 
         let xValues = chartSamples.map { $0.time }
         let lastRow = chartSamples.count + 1
@@ -74,11 +113,34 @@ enum XLSXWriter {
             let xRef = "'ГрафикДанные'!$A$2:$A$\(lastRow)"
             let yRef = "'ГрафикДанные'!$\(column)$2:$\(column)$\(lastRow)"
             let yValues = chartSamples.map { chartValue($0, index: index) }
-            files.append(Entry("xl/charts/chart\(index + 1).xml",
-                               chartXML(title: chartTitles[index],
-                                        color: chartColors[index],
-                                        xRef: xRef, yRef: yRef,
-                                        xValues: xValues, yValues: yValues)))
+
+            // Уникальные axId на каждый график — Excel индексирует графики по этим id.
+            let axidX = 1300000000 + index * 101
+            let axidY = axidX + 50
+
+            let main = chartXML(title: chartTitles[index],
+                                color: chartColors[index],
+                                xRef: xRef, yRef: yRef,
+                                xValues: xValues, yValues: yValues,
+                                axidX: axidX, axidY: axidY)
+            files.append(Entry("xl/charts/chart\(index + 1).xml", main))
+            files.append(Entry("xl/charts/_rels/chart\(index + 1).xml.rels",
+                               chartRels(index + 1)))
+            files.append(Entry("xl/drawings/ushapes\(index + 1).xml",
+                               userShapesXML(index + 1)))
+            files.append(Entry("xl/drawings/_rels/ushapes\(index + 1).xml.rels",
+                               userShapesRels(index + 1)))
+
+            // «Спутник» графика — цель userShapes-части; сам никогда не отображается.
+            // Свой спутник для каждого графика (без циклов в связях пакета).
+            let companion = chartXML(title: "Спутник \(index + 1)",
+                                     color: chartColors[index],
+                                     xRef: xRef, yRef: yRef,
+                                     xValues: xValues, yValues: yValues,
+                                     axidX: axidX + 2000000, axidY: axidY + 2000000)
+            files.append(Entry("xl/charts/xchart\(index + 1).xml",
+                               companion.replacingOccurrences(of: "<c:userShapes r:id=\"rId1\"/>",
+                                                              with: "")))
         }
 
         return archive(files)
@@ -123,8 +185,8 @@ enum XLSXWriter {
         out += "<worksheet xmlns=\"\(NS.main)\" xmlns:r=\"\(NS.r)\"><sheetData>"
 
         out += "<row r=\"1\">"
-        for (index, title) in dataHeaders.enumerated() {
-            out += stringCell("\(columnLetter(index + 1))1", title)
+        for (index, runs) in dataHeaders.enumerated() {
+            out += richCell("\(columnLetter(index + 1))1", runs)
         }
         out += "</row>"
 
@@ -146,14 +208,7 @@ enum XLSXWriter {
         return out
     }
 
-    private static func sheetCanvasXML() -> String {
-        header()
-            + "<worksheet xmlns=\"\(NS.main)\" xmlns:r=\"\(NS.r)\">"
-            + "<sheetData/>"
-            + "<drawing r:id=\"rId1\"/>"
-            + "</worksheet>"
-    }
-
+    /// Скрытый лист с прореженными данными, на которые ссылаются диаграммы.
     private static func sheetChartDataXML(_ chartSamples: [MotionSample]) -> String {
         var out = header()
         out += "<worksheet xmlns=\"\(NS.main)\" xmlns:r=\"\(NS.r)\"><sheetData>"
@@ -179,14 +234,98 @@ enum XLSXWriter {
         return out
     }
 
+    // MARK: - Листы-диаграммы (chartsheets)
+
+    private static func chartsheetXML() -> String {
+        header()
+            + "<chartsheet xmlns=\"\(NS.main)\" xmlns:r=\"\(NS.r)\">"
+            + "<sheetPr/>"
+            + "<sheetViews><sheetView tabSelected=\"1\" zoomScale=\"100\" workbookViewId=\"0\" zoomToFit=\"1\"/></sheetViews>"
+            + "<pageMargins left=\"0.7\" right=\"0.7\" top=\"0.75\" bottom=\"0.75\" header=\"0.3\" footer=\"0.3\"/>"
+            + "<drawing r:id=\"rId1\"/>"
+            + "</chartsheet>"
+    }
+
+    /// chartsheet → drawing (обязательно через drawing, не напрямую на chart).
+    private static func chartsheetRels(_ sheetNumber: Int) -> String {
+        header()
+            + "<Relationships xmlns=\"\(NS.pr)\">"
+            + "<Relationship Id=\"rId1\" Type=\"\(NS.r)/drawing\" Target=\"../drawings/drawing\(sheetNumber).xml\"/>"
+            + "</Relationships>"
+    }
+
+    /// Drawing листа-диаграммы: рамка на весь лист со ссылкой на chart.
+    private static func chartsheetDrawingXML(_ sheetNumber: Int) -> String {
+        header()
+            + "<xdr:wsDr xmlns:xdr=\"\(NS.xdr)\" xmlns:a=\"\(NS.a)\">"
+            + "<xdr:absoluteAnchor>"
+            + "<xdr:pos x=\"0\" y=\"0\"/>"
+            + "<xdr:ext cx=\"9295694\" cy=\"6067778\"/>"
+            + "<xdr:graphicFrame macro=\"\">"
+            + "<xdr:nvGraphicFramePr><xdr:cNvPr id=\"2\" name=\"Диаграмма \(sheetNumber)\"><a:extLst><a:ext uri=\"{FF2B5EF4-FFF2-40B4-BE49-F238E27FC236}\"/></a:extLst></xdr:cNvPr>"
+            + "<xdr:cNvGraphicFramePr><a:graphicFrameLocks noGrp=\"1\"/></xdr:cNvGraphicFramePr></xdr:nvGraphicFramePr>"
+            + "<xdr:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"0\" cy=\"0\"/></xdr:xfrm>"
+            + "<a:graphic><a:graphicData uri=\"\(NS.c)\">"
+            + "<c:chart xmlns:c=\"\(NS.c)\" xmlns:r=\"\(NS.r)\" r:id=\"rId1\"/>"
+            + "</a:graphicData></a:graphic>"
+            + "</xdr:graphicFrame>"
+            + "<xdr:clientData/>"
+            + "</xdr:absoluteAnchor></xdr:wsDr>"
+    }
+
+    /// drawing → chart.
+    private static func drawingsheetRels(_ sheetNumber: Int) -> String {
+        header()
+            + "<Relationships xmlns=\"\(NS.pr)\">"
+            + "<Relationship Id=\"rId1\" Type=\"\(NS.r)/chart\" Target=\"../charts/chart\(sheetNumber).xml\"/>"
+            + "</Relationships>"
+    }
+
     // MARK: - Диаграммы
+
+    /// chart → c:userShapes (Excel не показывает диаграмму на листе без этой связи).
+    private static func chartRels(_ sheetNumber: Int) -> String {
+        header()
+            + "<Relationships xmlns=\"\(NS.pr)\">"
+            + "<Relationship Id=\"rId1\" Type=\"\(NS.r)/chartUserShapes\" Target=\"../drawings/ushapes\(sheetNumber).xml\"/>"
+            + "</Relationships>"
+    }
+
+    /// Часть c:userShapes — обязательна для диаграмм на листах-диаграммах.
+    /// Содержит рамку со ссылкой на «спутник» графика.
+    private static func userShapesXML(_ sheetNumber: Int) -> String {
+        header()
+            + "<c:userShapes xmlns:c=\"\(NS.c)\">"
+            + "<cdr:relSizeAnchor xmlns:cdr=\"\(NS.cdr)\">"
+            + "<cdr:from><cdr:x>0</cdr:x><cdr:y>0</cdr:y></cdr:from>"
+            + "<cdr:to><cdr:x>1</cdr:x><cdr:y>1</cdr:y></cdr:to>"
+            + "<cdr:graphicFrame macro=\"\">"
+            + "<cdr:nvGraphicFramePr>"
+            + "<cdr:cNvPr id=\"2\" name=\"Диаграмма \(sheetNumber)\"/><cdr:cNvGraphicFramePr/>"
+            + "</cdr:nvGraphicFramePr>"
+            + "<cdr:xfrm><a:off xmlns:a=\"\(NS.a)\" x=\"0\" y=\"0\"/><a:ext xmlns:a=\"\(NS.a)\" cx=\"0\" cy=\"0\"/></cdr:xfrm>"
+            + "<a:graphic xmlns:a=\"\(NS.a)\">"
+            + "<a:graphicData uri=\"\(NS.c)\">"
+            + "<c:chart xmlns:c=\"\(NS.c)\" xmlns:r=\"\(NS.r)\" r:id=\"rId1\"/>"
+            + "</a:graphicData></a:graphic>"
+            + "</cdr:graphicFrame>"
+            + "</cdr:relSizeAnchor>"
+            + "</c:userShapes>"
+    }
+
+    /// userShapes → «спутник» графика (пустая chart-часть, цепочка без циклов).
+    private static func userShapesRels(_ sheetNumber: Int) -> String {
+        header()
+            + "<Relationships xmlns=\"\(NS.pr)\">"
+            + "<Relationship Id=\"rId1\" Type=\"\(NS.r)/chart\" Target=\"../charts/xchart\(sheetNumber).xml\"/>"
+            + "</Relationships>"
+    }
 
     private static func chartXML(title: String, color: String,
                                  xRef: String, yRef: String,
-                                 xValues: [Double], yValues: [Double]) -> String {
-        let axX = 111111111
-        let axY = 222222222
-        return header()
+                                 xValues: [Double], yValues: [Double],
+                                 axidX: Int, axidY: Int) -> String {
+        header()
             + "<c:chartSpace xmlns:c=\"\(NS.c)\" xmlns:a=\"\(NS.a)\" xmlns:r=\"\(NS.r)\"><c:chart>"
             + "<c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>\(escape(title))</a:t></a:r></a:p></c:rich></c:tx><c:overlay val=\"0\"/></c:title>"
             + "<c:autoTitleDeleted val=\"0\"/>"
@@ -195,17 +334,20 @@ enum XLSXWriter {
             + "<c:ser><c:idx val=\"0\"/><c:order val=\"0\"/>"
             + "<c:tx><c:v>\(escape(title))</c:v></c:tx>"
             + "<c:spPr><a:ln w=\"19050\"><a:solidFill><a:srgbClr val=\"\(color)\"/></a:solidFill></a:ln></c:spPr>"
+            + "<c:marker><c:symbol val=\"none\"/></c:marker>"
             + "<c:xVal><c:numRef><c:f>\(escape(xRef))</c:f>\(numberCache(xValues))</c:numRef></c:xVal>"
             + "<c:yVal><c:numRef><c:f>\(escape(yRef))</c:f>\(numberCache(yValues))</c:numRef></c:yVal>"
             + "<c:smooth val=\"0\"/></c:ser>"
-            + "<c:axId val=\"\(axX)\"/><c:axId val=\"\(axY)\"/>"
+            + "<c:axId val=\"\(axidX)\"/><c:axId val=\"\(axidY)\"/>"
             + "</c:scatterChart>"
-            + "<c:valAx><c:axId val=\"\(axX)\"/><c:scaling><c:orientation val=\"minMax\"/></c:scaling><c:delete val=\"0\"/><c:axPos val=\"b\"/><c:numFmt formatCode=\"General\" sourceLinked=\"1\"/><c:majorTickMark val=\"out\"/><c:minorTickMark val=\"none\"/><c:tickLblPos val=\"nextTo\"/><c:crossAx val=\"\(axY)\"/><c:crosses val=\"autoZero\"/><c:crossBetween val=\"midCat\"/></c:valAx>"
-            + "<c:valAx><c:axId val=\"\(axY)\"/><c:scaling><c:orientation val=\"minMax\"/></c:scaling><c:delete val=\"0\"/><c:axPos val=\"l\"/><c:majorGridlines/><c:numFmt formatCode=\"General\" sourceLinked=\"1\"/><c:majorTickMark val=\"out\"/><c:minorTickMark val=\"none\"/><c:tickLblPos val=\"nextTo\"/><c:crossAx val=\"\(axX)\"/><c:crosses val=\"autoZero\"/></c:valAx>"
+            + "<c:valAx><c:axId val=\"\(axidX)\"/><c:scaling><c:orientation val=\"minMax\"/></c:scaling><c:delete val=\"0\"/><c:axPos val=\"b\"/><c:numFmt formatCode=\"General\" sourceLinked=\"1\"/><c:majorTickMark val=\"out\"/><c:minorTickMark val=\"none\"/><c:tickLblPos val=\"nextTo\"/><c:crossAx val=\"\(axidY)\"/><c:crosses val=\"autoZero\"/><c:crossBetween val=\"midCat\"/></c:valAx>"
+            + "<c:valAx><c:axId val=\"\(axidY)\"/><c:scaling><c:orientation val=\"minMax\"/></c:scaling><c:delete val=\"0\"/><c:axPos val=\"l\"/><c:majorGridlines/><c:numFmt formatCode=\"General\" sourceLinked=\"1\"/><c:majorTickMark val=\"out\"/><c:minorTickMark val=\"none\"/><c:tickLblPos val=\"nextTo\"/><c:crossAx val=\"\(axidX)\"/><c:crosses val=\"autoZero\"/></c:valAx>"
             + "</c:plotArea>"
             + "<c:legend><c:legendPos val=\"b\"/><c:overlay val=\"0\"/></c:legend>"
             + "<c:plotVisOnly val=\"0\"/>"
-            + "</c:chart></c:chartSpace>"
+            + "</c:chart>"
+            + "<c:userShapes r:id=\"rId1\"/>"
+            + "</c:chartSpace>"
     }
 
     private static func numberCache(_ values: [Double]) -> String {
@@ -217,63 +359,28 @@ enum XLSXWriter {
         return out
     }
 
-    private static func drawingXML() -> String {
-        var anchors = ""
-        for index in 0..<12 {
-            let column = (index % 3) * 9
-            let row = (index / 3) * 16
-            anchors += "<xdr:oneCellAnchor>"
-                + "<xdr:from><xdr:col>\(column)</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>\(row)</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from>"
-                + "<xdr:ext cx=\"4572000\" cy=\"2743200\"/>"
-                + "<xdr:graphicFrame macro=\"\">"
-                + "<xdr:nvGraphicFramePr><xdr:cNvPr id=\"\(index + 2)\" name=\"Chart \(index + 1)\"/><xdr:cNvGraphicFramePr/></xdr:nvGraphicFramePr>"
-                + "<xdr:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"0\" cy=\"0\"/></xdr:xfrm>"
-                + "<a:graphic><a:graphicData uri=\"\(NS.c)\">"
-                + "<c:chart xmlns:c=\"\(NS.c)\" xmlns:r=\"\(NS.r)\" r:id=\"rId\(index + 1)\"/>"
-                + "</a:graphicData></a:graphic>"
-                + "</xdr:graphicFrame>"
-                + "<xdr:clientData/>"
-                + "</xdr:oneCellAnchor>"
-        }
-        return header()
-            + "<xdr:wsDr xmlns:xdr=\"\(NS.xdr)\" xmlns:a=\"\(NS.a)\" xmlns:r=\"\(NS.r)\">"
-            + anchors
-            + "</xdr:wsDr>"
-    }
-
     // MARK: - Служебные части книги
 
     private static func workbookXML() -> String {
-        header()
+        var sheets = "<sheet name=\"Данные\" sheetId=\"1\" r:id=\"rId1\"/>"
+        for (index, title) in chartTitles.enumerated() {
+            sheets += "<sheet name=\"\(escape(title))\" sheetId=\"\(index + 2)\" r:id=\"rId\(index + 3)\"/>"
+        }
+        sheets += "<sheet name=\"ГрафикДанные\" sheetId=\"14\" r:id=\"rId2\" state=\"hidden\"/>"
+        return header()
             + "<workbook xmlns=\"\(NS.main)\" xmlns:r=\"\(NS.r)\"><sheets>"
-            + "<sheet name=\"Данные\" sheetId=\"1\" r:id=\"rId1\"/>"
-            + "<sheet name=\"Графики\" sheetId=\"2\" r:id=\"rId2\"/>"
-            + "<sheet name=\"ГрафикДанные\" sheetId=\"3\" state=\"hidden\" r:id=\"rId3\"/>"
+            + sheets
             + "</sheets></workbook>"
     }
 
     private static func workbookRels() -> String {
-        header()
-            + "<Relationships xmlns=\"\(NS.pr)\">"
-            + "<Relationship Id=\"rId1\" Type=\"\(NS.r)/worksheet\" Target=\"worksheets/sheet1.xml\"/>"
-            + "<Relationship Id=\"rId2\" Type=\"\(NS.r)/worksheet\" Target=\"worksheets/sheet2.xml\"/>"
-            + "<Relationship Id=\"rId3\" Type=\"\(NS.r)/worksheet\" Target=\"worksheets/sheet3.xml\"/>"
-            + "<Relationship Id=\"rId4\" Type=\"\(NS.r)/styles\" Target=\"styles.xml\"/>"
-            + "</Relationships>"
-    }
-
-    private static func sheetDrawingRels() -> String {
-        header()
-            + "<Relationships xmlns=\"\(NS.pr)\">"
-            + "<Relationship Id=\"rId1\" Type=\"\(NS.r)/drawing\" Target=\"../drawings/drawing1.xml\"/>"
-            + "</Relationships>"
-    }
-
-    private static func drawingRels() -> String {
         var out = header() + "<Relationships xmlns=\"\(NS.pr)\">"
+        out += "<Relationship Id=\"rId1\" Type=\"\(NS.r)/worksheet\" Target=\"worksheets/sheet1.xml\"/>"
+        out += "<Relationship Id=\"rId2\" Type=\"\(NS.r)/worksheet\" Target=\"worksheets/sheet2.xml\"/>"
         for index in 0..<12 {
-            out += "<Relationship Id=\"rId\(index + 1)\" Type=\"\(NS.r)/chart\" Target=\"../charts/chart\(index + 1).xml\"/>"
+            out += "<Relationship Id=\"rId\(index + 3)\" Type=\"\(NS.r)/chartsheet\" Target=\"chartsheets/sheet\(index + 1).xml\"/>"
         }
+        out += "<Relationship Id=\"rId15\" Type=\"\(NS.r)/styles\" Target=\"styles.xml\"/>"
         out += "</Relationships>"
         return out
     }
@@ -292,13 +399,23 @@ enum XLSXWriter {
         out += "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>"
         out += "<Default Extension=\"xml\" ContentType=\"application/xml\"/>"
         out += "<Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/>"
-        for index in 1...3 {
-            out += "<Override PartName=\"/xl/worksheets/sheet\(index).xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>"
+        out += "<Override PartName=\"/xl/worksheets/sheet1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>"
+        out += "<Override PartName=\"/xl/worksheets/sheet2.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>"
+        for index in 1...12 {
+            out += "<Override PartName=\"/xl/chartsheets/sheet\(index).xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.chartsheet+xml\"/>"
+        }
+        for index in 1...12 {
+            out += "<Override PartName=\"/xl/drawings/drawing\(index).xml\" ContentType=\"application/vnd.openxmlformats-officedocument.drawing+xml\"/>"
+        }
+        for index in 1...12 {
+            out += "<Override PartName=\"/xl/drawings/ushapes\(index).xml\" ContentType=\"application/vnd.openxmlformats-officedocument.drawingml.chartshapes+xml\"/>"
         }
         out += "<Override PartName=\"/xl/styles.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml\"/>"
-        out += "<Override PartName=\"/xl/drawings/drawing1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.drawing+xml\"/>"
         for index in 1...12 {
             out += "<Override PartName=\"/xl/charts/chart\(index).xml\" ContentType=\"application/vnd.openxmlformats-officedocument.drawingml.chart+xml\"/>"
+        }
+        for index in 1...12 {
+            out += "<Override PartName=\"/xl/charts/xchart\(index).xml\" ContentType=\"application/vnd.openxmlformats-officedocument.drawingml.chart+xml\"/>"
         }
         out += "<Override PartName=\"/docProps/core.xml\" ContentType=\"application/vnd.openxmlformats-package.core-properties+xml\"/>"
         out += "<Override PartName=\"/docProps/app.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.extended-properties+xml\"/>"
@@ -354,6 +471,19 @@ enum XLSXWriter {
 
     private static func stringCell(_ ref: String, _ text: String, style: Int = 1) -> String {
         "<c r=\"\(ref)\" t=\"inlineStr\" s=\"\(style)\"><is><t>\(escape(text))</t></is></c>"
+    }
+
+    /// Rich-текстовая ячейка: несколько запусков с нижним/верхним индексом.
+    private static func richCell(_ ref: String, _ runs: [Run], style: Int = 1) -> String {
+        var parts = ""
+        for run in runs {
+            if let vertAlign = run.vertAlign {
+                parts += "<r><rPr><vertAlign val=\"\(vertAlign)\"/></rPr><t>\(escape(run.text))</t></r>"
+            } else {
+                parts += "<r><t>\(escape(run.text))</t></r>"
+            }
+        }
+        return "<c r=\"\(ref)\" t=\"inlineStr\" s=\"\(style)\"><is>\(parts)</is></c>"
     }
 
     /// Формат числа как в «сыром» виде: точка как разделитель, без хвостовых нулей.
