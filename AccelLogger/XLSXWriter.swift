@@ -370,7 +370,7 @@ enum XLSXWriter {
         var result = ""
         while value > 0 {
             let remainder = (value - 1) % 26
-            result = String(UnicodeScalar(UInt8(65 + remainder))!) + result
+            result = String(UnicodeScalar(UInt8(65 + remainder))) + result
             value = (value - 1) / 26
         }
         return result
